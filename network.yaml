@@ -1,0 +1,46 @@
+!obj:pylearn2.train.Train {
+    dataset: &train !obj:data_loader.Data  {
+        which_set: 'train'
+    },
+    model: !obj:pylearn2.models.mlp.MLP {
+        input_space: !obj:pylearn2.space.Conv2DSpace {
+            shape: [ !pkl: 'context_length.pkl', !pkl: 'num_channels.pkl'],
+            num_channels: 1
+        },
+        layers: [ !obj:pylearn2.models.mlp.RectifiedLinear {
+                     layer_name: 'layer1',
+                     dim: !pkl: 'num_neurons.pkl',
+                     irange: 0.01
+                 }, !obj:pylearn2.models.mlp.Linear {
+                     layer_name: 'outputLayer',
+                     dim: 1,
+                     irange: 0.05
+                 }
+                ],
+    },
+    algorithm: !obj:pylearn2.training_algorithms.sgd.SGD {
+        batch_size: 128,
+        learning_rate: 0.01,
+        learning_rule: !obj:pylearn2.training_algorithms.learning_rule.Momentum {
+            init_momentum: 0.5
+        },
+        monitor_iteration_mode: 'shuffled_sequential',
+        train_iteration_mode: 'shuffled_sequential', 
+        termination_criterion: !obj:pylearn2.termination_criteria.And {
+            criteria: [
+                !obj:pylearn2.termination_criteria.EpochCounter {
+                    max_epochs: !pkl: 'num_training_epochs.pkl'
+                },
+            ]
+        },
+    },
+    extensions:
+        [ !obj:pylearn2.training_algorithms.learning_rule.MomentumAdjustor {
+            start: 1,
+            saturate: 100,
+            final_momentum: .9
+        },
+    ],
+    save_path: "./network_best.pkl",
+    save_freq: 100
+}
