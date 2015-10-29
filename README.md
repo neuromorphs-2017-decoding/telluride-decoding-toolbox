@@ -3,6 +3,9 @@ Sahar Akram (UMD), Alain de Chevigne (ENS), Peter Diehl (ETH),
 Jens Hjortjaer (DTU), Nima Mesgarani (Columbia), Lucas Parra (NYU), 
 Shihab Shamma (UMD), Malcolm Slaney (Google), Daniel Wong (ENS)
 
+Full documentation is available at: 
+https://docs.google.com/document/d/1PYBzEE_aJ5_DpI2AnYKffa3ieckXuSb0eJUTvL1OVlI/edit?usp=sharing
+
 Our goal is to provide a standard set of tools that allow users to decode 
 brain signals into the signals that generated them, 
 whether the signals come from visual or auditory stimuli, and 
@@ -25,7 +28,7 @@ particular bands over time. BCI (brain-computer interface) experiments,
 may look for some spectral change in the brain response that researchers 
 can use to indicate a choice—the problem is treated as a classification problem.
 
-This toolbox takes a new approach.  
+This toolbox takes a new approach.
 Given a stimulus and the resulting brain response, 
 we want to decode the response to find the original stimuli. 
 In the simplest case we want to predict the auditory signal that 
@@ -48,7 +51,7 @@ While the correlations are still low, we think they will get better with time.
 
 Overview
 A common application of these tools is to decode attention: 
-estimate which auditory source is a listener attending.  
+estimate which auditory source is a listener attending.
 As shown in the attention decoding block diagram below, 
 this toolbox addresses three parts of the decoding problem: 
 predicting the stimuli, correlating with the expected signals, and 
@@ -58,13 +61,13 @@ deciding the attended speaker.
 
 To connect audio and EEG (or the reverse) we provides two 
 basic forms of predictions: linear and non-linear. 
-They each have different strengths and needs.  
+They each have different strengths and needs.
 Linear prediction is easiest to formulate, analyze, and calculate. 
 Non-linear predictions based on deep neural networks (DNNs) 
 represent a rich source of possibilities but with a larger computational cost. 
 
 Then to decide which speaker a subject is attending, 
-we correlate the predictions with the original stimuli.  
+we correlate the predictions with the original stimuli.
 Correlation answers a simple question, are two signals related, 
 and thus might perform better in some situations. 
 This can be done in any of several feature domains, such as intensity, 
@@ -79,7 +82,7 @@ For the linear model (FindTRF) this is equivalent to a multi-channel
 convolution. 
 While for the DNN approach the TRF is a non-linear function of its inputs.
 
-Decoding algorithms depend on temporal context to make their predictions.  
+Decoding algorithms depend on temporal context to make their predictions.
 For example when predicting the forward response (audio->eeg), 
 the audio right now will generate a response over several tens of 
 milliseconds to come. 
@@ -104,7 +107,7 @@ This dataset starts with a deterministic attention signal and
 creates two random 32 channel EEG system impulse responses, 
 one for the attended and one for the unattended signal. 
 It correlates two sinusoidal test signals with the appropriate 
-impulse response to get the EEG response.  
+impulse response to get the EEG response.
 The goal of this toolbox is to reconstruct the original attention signal---
 was the subject listening to speaker 1 (sinusoid test signal 1) 
 or speaker 2 (sinusoid test signal 2). 
