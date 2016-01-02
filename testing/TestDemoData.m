@@ -1,3 +1,10 @@
+% Code to test the performance of the Telluride Decoding Toolbox on the 
+% Telluride demo data (four simultaneous EEG recordings while listening to 
+% single AV presentation.
+
+% By Malcolm Slaney, Google Machine Hearing Project
+% malcolm@ieee.org, malcolmslaney@google.com
+
 % Run these tests from the testing directory.  That means the actual 
 % are one level up the directory hierarchy.
 
@@ -22,6 +29,8 @@ oldFs = data.fsample.eeg; newFs = 64;
 for i=1:length(data.eeg)
     down_eeg{i} = resample_fft(data.eeg{i}, oldFs, newFs);
 end
+
+nTrials = size(eeg_data,3);
 
 %%
 % Now create a model for each trial.
@@ -97,7 +106,7 @@ end
 
 figure(2); clf
 plot([self_correlation' meanmodel_correlation' cleanmodel_correlation' random_correlation' ])
-legend('Self Correlation', 'Mean Model Correlation', 'Clean Model Correlation', 'Random Model Correlation');
+legend('Self Correlation', 'Mean Model Correlation', 'Jackknife Model Correlation', 'Random Model Correlation');
 xlabel('Trial Number'); ylabel('Correlation between intensity and prediction');
 title('Demo Data Model Correlation');
 
@@ -241,11 +250,98 @@ end
 
 %%
 figure(3); clf;
+methodLegend = methodValues;    % Rewrite labels to make them readable
+methodLegend{1} = 'No Regularization';
+for i=1:4
+    methodLegend{i} = ['Linear - ' methodLegend{i}];
+end
 semilogx(kValues, regular_results);
 xlabel('Regularization Value (K)');
 ylabel('Correlation');
-legend(methodValues, 'Location', 'Best');
+legend(methodLegend, 'Location', 'Best');
 title('Prediction Performance with Different Regularizers');
-
 %%
-save TestDemoData kValues regular_results methodValues testmodel_dnn
+kRepresentationValues = [.01 0.1 0.2 0.5];
+Method = 'shrinkage';
+audioRepresentations = {'Intensity', 'Derivative', 'Onset', 'Offset'};
+representation_results = zeros(length(kRepresentationValues), ...
+                               length(audioRepresentations));
+
+for mi = 1:length(audioRepresentations)         % By representation
+    representation = audioRepresentations{mi};
+    clear wav_stim;
+    for i=1:length(data.wav)
+        switch lower(representation)
+            case 'intensity'
+                wav_stim{i} = down_wav{i};
+            case 'derivative'
+                wav_stim{i} = [down_wav{i}(2:end); ...
+                            down_wav{i}(end)] - ...
+                    down_wav{i};
+            case 'onset'
+                wave_derivative = ...
+                    [down_wav{i}(2:end); ...
+                     down_wav{i}(end)] - ...
+                    down_wav{i};
+                wav_stim{i} = max(0, wave_derivative);
+            case 'offset'
+                wave_derivative = ...
+                    [down_wav{i}(2:end); ...
+                     down_wav{i}(end)] - ...
+                    down_wav{i};
+                wav_stim{i} = min(0, wave_derivative);
+            case 'binary intensity'
+                wav_stim{i} = 1.0*(down_wav{i} > 0);
+            case 'binary derivative'
+                wave_derivative = ...
+                    [down_wav{i}(2:end); ...
+                     down_wav{i}(end)] - ...
+                    down_wav{i};
+                wav_stim{i} = 1.0*(wave_derivative > 0);
+            otherwise
+                disp('Unknown audio representation');
+        end
+    end
+    for ki = 1:length(kRepresentationValues)          % By regularization
+        K = kRepresentationValues(ki);
+        % Now create a model for each trial.
+        Lags = 0:round(newFs/3);
+        model = cell(1,length(down_eeg));
+        for i=1:length(data.eeg)
+            stimulus_number = mod(i-1,4) + 1;
+            model{i} = FindTRF(wav_stim{stimulus_number}, ...
+                down_eeg{i}, -1, [], [], Lags, Method, K);
+        end
+        allModels = zeros(size(model{1},1), size(model{1},2), length(model));
+        for i=1:length(model);
+            allModels(:,:,i) = model{i};
+        end
+
+        % Train on the average of all the models except this one (clean!!)
+        testmodel_correlation = zeros(1,length(data.eeg));
+        for i=1:length(data.eeg)
+            stimulus_number = mod(i-1,4) + 1;
+            test_model = allModels;
+            test_model(:,:,i) = [];
+            test_model = mean(test_model, 3);
+            [~, prediction] = FindTRF([], [], ...
+                -1, down_eeg{i}, test_model, Lags, Method);
+            % pred_wav{i} = prediction;
+            r = corrcoef([wav_stim{stimulus_number} prediction]);
+            testmodel_correlation(i) = r(2,1);
+        end
+        representation_results(ki, mi) = mean(testmodel_correlation(isfinite(testmodel_correlation)));
+    end
+end
+%%
+figure(4);
+
+semilogx(kValues, representation_results);
+xlabel('Regularization Value (K)');
+ylabel('Correlation');
+legend(audioRepresentations, 'Location', 'Best');
+title('Prediction Performance with Different Audio Representations (FindTRF Shrinkage)');
+%%
+save TestDemoData kValues regular_results methodValues testmodel_dnn ...
+    self_correlation meanmodel_correlation ...
+    cleanmodel_correlation random_correlation
