@@ -1,4 +1,4 @@
-function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, K, doscale)
+function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, K, doscale, Valid)
 % FindTRF - Find the temporal response function connecting stimulus and
 % response.
 % [g,pred] = TRF(stimulus, response, Dir, testdata, g, Lags, Method, K, doscale)
@@ -36,17 +36,20 @@ function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, 
 %                    avoid overfitting
 %                 An additional input K specifies the regularization term
 %                 Possible inputs:
-%                 - 'Shrinkage', K (Default) (default K=0.2)
-%                 - 'Ridge', K (default K=10) : ridge regression with penalty
-%                      on neighbouring lags (see Lalor et al 2006: The VESPA) 
-%                 - 'NRC', K (default K=0.99) :  normalized reverse correlation
-%                 - 'Lasso', K (default K=[.01 1]) : lasso / elastic net.
+%                 - 'Shrinkage', K (Default) (default K=0.2, range [0:1])
+%                 - 'Ridge', K (default K=[10 1], ranges [0:Inf] [0 1]) : ridge regression 
+%                      K(2) specifies the order of the derivative of the
+%                      penalty (0: normal ridge, 1: first order derivative)
+%                      (see Lalor et al 2006: The VESPA) 
+%                 - 'NRC', K (default K=0.99, range [0:1]) :  normalized reverse correlation
+%                 - 'Lasso', K (default K=[.01 1], range [0:Inf, 0:1]) : lasso / elastic net.
 %                      Uses matlab's lasso (needs statistics toolbox).
 %                      K(2) controls the degree of L1 penalty (elastic net)
-%                      This option may result in long computation times
+%                      Lasso may result in long computation times
 %                 - 'None' : no regularization, use ordinary least-squares
 %      K          - Regularization parameter(s)
 %      doscale    - Option to scale inputs to zero mean and std 1 (Default on)
+%      Valid      - (time x 1) vector: zeros are marked as non-valid data and left out 
 % 
 %   Returns:
 %      g: the TRF function.  It will have a size of
@@ -54,7 +57,7 @@ function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, 
 %      pred: predicted output from testdata
 % 
 % hac @ telluride2015
-% version 09-24-2015 
+% version 11-03-2015 
 
 if exist('Method', 'var') 
     Method = lower(Method);
@@ -83,10 +86,9 @@ if ~isempty(stimulus)
     if strcmp(Method,'lasso') && ~license('test', 'statistics_toolbox')
                 error('Statistics toolbox needed for lasso')
         error('You need to have the statistics toolbox to use the Lasso method.');
-    end
-    
-    % Figure out the inputs and outputs from the regression.  We are given
-    % x and we want to find Y.
+    end  
+    % Figure out the inputs and outputs from the regression. 
+    % We are given x and we want to find Y.
     if Dir > 0              % Forward direction, from stimulus to response
         x = stimulus;
         Y = response;
@@ -98,7 +100,7 @@ if ~isempty(stimulus)
     end
     if ~isempty(testdata) && ~exist('g','var')
         if size(x,2) ~= size(testdata,2)
-            error('Testdata does not have the same # of channels as stimulus');
+            error('Testdata does not have the same # of dimensions as stim/resp');
         end
     end
     if ~exist('K', 'var') || isempty(K)
@@ -106,11 +108,11 @@ if ~isempty(stimulus)
             case 'shrinkage'
                 K=.2;
             case 'ridge'
-                K=10;
+                K=[10,1];
             case 'nrc'
                 K=.99;
             case 'lasso'
-                K = [0.01,1];
+                K=[0.01,1];
         end
     end
     nx = size(x,2);
@@ -118,9 +120,8 @@ if ~isempty(stimulus)
 end
 
 if ~exist('doscale', 'var')
-    doscale = 1;
+    doscale=1;
 end
-
 if ~exist('g','var') || isempty(g)
     g=[];
 else
@@ -130,21 +131,22 @@ else
        if nlag ~= size(g,1)
            error('Number of Lags and g does not correspond')
        end
-
         if ~isempty(testdata) % reshape g for prediction
             ndim = ndims(g); 
             if Dir == 1 && ndim==3
                 g = permute(g,[1 3 2]); % adds singleton for 2d   
             end
             nx = size(testdata,2);
-            ny = size(g,ndim-1);
             if ndim==3
+                ny = size(g,ndim-1);
                 g = shiftdim(g,ndims(g)-1);
                 g = reshape(g,nlag*nx,ny);
             else
                 if nx~=1
+                    ny = 1;
                     g = reshape(g',nlag*size(g,2),1);
                 else
+                    ny = size(g,ndim);
                     g = reshape(g,nlag,size(g,2));
                 end
             end
@@ -156,6 +158,15 @@ end
 
 if ~isempty(stimulus)
     
+    if exist('Valid','var')
+        if size(Valid,1) ~= size(x,1)
+            error('Valid vector must match the # of samples in stim/resp')
+        end
+        Valid = logical(Valid);
+        x = x(Valid,:);
+        Y = Y(Valid,:);
+    end
+
     x(isnan(x))=0;
 
     if doscale
@@ -173,8 +184,14 @@ if ~isempty(stimulus)
             XX = (1-K)*XX + K*mean(eig(XX))*eye(length(XX));
             g=XX\XY';
         case 'ridge'
-            M = 2*eye(size(XX))-diag(ones(size(XX,1)-1,1),1)-diag(ones(size(XX,1)-1,1),-1); M([1 end]) = 1;
-            g=(XX+K*M)\XY';
+            if length(K)==1,K(2)=1;end
+            if K(2)==0;
+                M = eye(size(XX));    
+            else
+                M = 2*eye(size(XX))-diag(ones(size(XX,1)-1,1),1)-diag(ones(size(XX,1)-1,1),-1); M([1 end]) = 1;
+                if K(2)~=1, warning('Only derivative order 0 or 1 allowed. Using 1'), end
+            end
+            g=(XX+K(1)*M)\XY';
         case 'nrc' 
             [u,s,v] = svd(XX);
             energy = cumsum(diag(s)./sum(diag(s)));
@@ -184,7 +201,7 @@ if ~isempty(stimulus)
                 newDiag(limit+1:end) = 0;
             end
             RRinv = v*diag(newDiag)*u';
-            g = RRinv * XY';            
+            g=RRinv * XY';
         case 'lasso'
             if length(K)==1,K(2)=1;end
             for ii=1:size(XY,1)
@@ -193,45 +210,25 @@ if ~isempty(stimulus)
         case 'none'
             g=XX\XY';
         otherwise
-            error('unknown method')
+si            error('unknown method')
     end
 end
 
-if ~isempty(testdata)
-    testdata(isnan(testdata))=0;
+if ~isempty(testdata) % do prediction
     if doscale
         testdata = dozscore(testdata);
     end
     testlag = LagGenerator(testdata,Lags);
-    pred = testlag * g; 
+    pred = testlag * g;
 end
 
 % reshape to lags x features x channels, removing singletons
-if ~isempty(stimulus)
-    g = squeeze(reshape(g',ny,nx,nlag));g=shiftdim(g,ndims(g)-1);
-    if ndims(g) == 3 && Dir == 1
-        g = permute(g,[1 3 2]); 
-    end
-    if nx==1 && ny==1
-        g=g';
-    end
+g = squeeze(reshape(g',ny,nx,nlag));g=shiftdim(g,ndims(g)-1);
+if ndims(g) == 3 && Dir == 1
+    g = permute(g,[1 3 2]);
 end
-
-
-function out = LagGenerator(in, Lags)
-    dimshift = size(in,2);
-    out = zeros(size(in,1), dimshift*length(Lags));
-    idx = 1;
-    for lag = Lags
-        t1 = circshift(in,lag);
-        if lag < 0
-            t1(end-abs(lag)+1:end,:) = 0;   % zero out end of time
-        else
-            t1(1:lag,:) = 0;                % zero out first part of time.
-        end
-        out(:,idx:idx+dimshift-1) = t1(1:size(in,1),:);
-        idx = idx + dimshift;               % Advance to next lag slice
-    end
+if nx==1 && ny==1
+    g=g';
 end
 
 function out = dozscore(in)
@@ -242,6 +239,8 @@ function out = dozscore(in)
         out = bsxfun(@rdivide,in,stdin);
 end
 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Examples:
 if 0  % example using forward mapping:
     %%
@@ -271,14 +270,15 @@ if 0  % example using forward mapping:
     fprintf('Correlation between original and predicted response: %1.2f\n',cc(2))
 end
 
-if 0 % Malcolm's deterministic stimulus reconstruction example
+if 0 % example using backward mapping / reconstruction
     %%
     N = 10000;
     StimulusData = randn(N,2);      % Generate a bunch of 2-channel data
     lags = 0:10; Dir = -1;
-    
-    % Create the response.  First channel is 0.5 times current time, plus
-    % 0.25 times previous time.  Second channel is all noise.
+
+    % Create the response.  
+    % First channel is 0.5 times current time, plus 0.25 times previous time.  
+    % Second channel is all noise.
     ResponseData = [StimulusData(:,1)*.5 + [StimulusData(2:end,1)*.25; 0] randn(N,1)];
     TestingTimes = 1:1000;          % Use first part for testing
     TrainingTimes = max(TestingTimes)+1:N;  % Use rest of data for training
@@ -302,5 +302,44 @@ if 0 % Malcolm's deterministic stimulus reconstruction example
     legend('Ground Truth', 'Predictions');
 end
 
+if 0 % Test the valid bit
+    %%
+    N = 10000;
+    StimulusData = randn(N,2);      % Generate a bunch of 2-channel data
+    lags = 0:10; Dir = -1;
+
+    % Create the response.  
+    % Create two responses, and flip back and forth, under control of the 
+    % modelFlag.
+    ResponseData1 = [StimulusData(:,1)*.5 + [StimulusData(2:end,1)*.25; 0] randn(N,1)];
+    ResponseData2 = [StimulusData(:,1)*.5 + [StimulusData(2:end,1)*-.25; 0] randn(N,1)];
+    modelFlag = mod(floor((1:N)/300), 2)';
+    ResponseData = ResponseData1.*repmat(modelFlag,1,2) + ...
+        ResponseData2.*(1-repmat(modelFlag,1,2));
+    TestingTimes = 1:1000;          % Use first part for testing
+    TrainingTimes = max(TestingTimes)+1:N;  % Use rest of data for training
+    TrainingStim = StimulusData(TrainingTimes,:);
+    TrainingResp = ResponseData(TrainingTimes,:);
+    TestingStim = StimulusData(TestingTimes, :);
+    TestingResp = ResponseData(TestingTimes, :);
+ 
+    % Now compute the response.
+    % Try modelFlag, ~modelFlag, and -4 > modelFlag to see the behavior
+    % for model 1 and 2, or all (which gives only an impulse at t=0.)
+    K = 1.0; doScale = 0;
+    [g,TestingStimPredict] = FindTRF(TrainingStim, TrainingResp, Dir, ...
+        TestingResp, [], lags, 'none', K, doScale, ...
+        ~modelFlag(TrainingTimes));
+
+    % Impulse response for feature 1, channel 1 should be powers of 2.
+    subplot(2,1,1);
+    plot(lags, g(:,1,1));
+    xlabel('Delta Time');
+    ylabel('Impulse Response');
+    subplot(2,1,2);
+    t=1:100; plot(t, TestingStim(t,1), t, TestingStimPredict(t),'x')
+    legend('Ground Truth', 'Predictions');
+
+end
 
 end
