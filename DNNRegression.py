@@ -47,8 +47,6 @@ class DNNregression:
         """
         See module-level docstring of /pylearn2/scripts/train.py for a more details.
         """
-        print 'make argument parser'
-        parser = pylearn2train.make_argument_parser()
         print 'train network'
         pylearn2train.train(self.yaml_path)
     
@@ -205,7 +203,6 @@ def main():
     debug = 0
     num_training_epochs = 100
     num_neurons = 5
-    num_channels = 32
         
     #------------------------------------------------------------------------------ 
     # parse arguments
@@ -221,7 +218,6 @@ def main():
                 '[--context N  for N>=1   *25] \n', \
                 '[--numEpochs N default is 100]', \
                 '[--numNeurons N default is 5]', \
-                '[--numChannels N default is 32]', \
                 '[--dir forward/reverse*] \n', \
                 '[--valid  which parts are valid, in case of concatenating trials, default all valid.] \n', \
                 '[--forking for matlab sake] \n'
@@ -263,8 +259,6 @@ def main():
             num_training_epochs = int(arg)
         elif opt in ("--numNeurons"):
             num_neurons = int(arg)
-        elif opt in ("--numChannels"):
-            num_channels = int(arg)
         elif opt in ("--dir"):
             direction = arg
         elif opt in ("--valid"):
@@ -311,6 +305,14 @@ def main():
     os.environ["EEGTOOLS_CONTEXT_LENGTH"] = str(context_length)
     os.environ["EEGTOOLS_DIRECTION"] = direction
     os.environ["EEGTOOLS_DEBUG"] = str(debug)
+    
+    # determine number of channels from data
+    if direction == 'forward':
+        input_path = stimulus_data
+    else:
+        input_path = response_data
+    input_data = data_loader.load_data_from_file(input_path)
+    num_channels = input_data.shape[1]
     os.environ["EEGTOOLS_NUM_CHANNELS"] = str(num_channels)
     
     #------------------------------------------------------------------------------ 

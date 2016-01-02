@@ -66,7 +66,7 @@ class Data(dense_design_matrix.DenseDesignMatrix):
             self.stimulus_data = load_data_from_file(self.stimulus_data_path)
             self.response_data = load_data_from_file(self.response_data_path)
             if self.valid_data_entries_path != '-1':
-                self.valid_data_entries = load_data_from_file(self.valid_data_entries_path)
+                self.valid_data_entries = np.squeeze(load_data_from_file(self.valid_data_entries_path))
             else:
                 if self.direction == 'forward':
                     self.valid_data_entries = np.ones((self.stimulus_data.shape[0],))
@@ -90,14 +90,14 @@ class Data(dense_design_matrix.DenseDesignMatrix):
         elif self.direction == 'forward':
             self.stimulus_data = load_data_from_file(self.stimulus_data_path)
             if self.valid_data_entries_path != '-1':
-                self.valid_data_entries = load_data_from_file(self.valid_data_entries_path)
+                self.valid_data_entries = np.squeeze(load_data_from_file(self.valid_data_entries_path))
             else:
                 self.valid_data_entries = np.ones((self.stimulus_data.shape[0],))
             self.stimulus_data, _ = self.slice_data()
         elif self.direction == 'reverse':
             self.response_data = load_data_from_file(self.response_data_path)
             if self.valid_data_entries_path != '-1':
-                self.valid_data_entries = load_data_from_file(self.valid_data_entries_path)
+                self.valid_data_entries = np.squeeze(load_data_from_file(self.valid_data_entries_path))
             else:
                 self.valid_data_entries = np.ones((self.response_data.shape[0],))
             _, self.response_data = self.slice_data()
@@ -113,11 +113,12 @@ class Data(dense_design_matrix.DenseDesignMatrix):
         num_timesteps = len(self.valid_data_entries)
         num_channels = self.response_data.shape[1]
         defined_num_channels = int(os.environ["EEGTOOLS_NUM_CHANNELS"])
-        print defined_num_channels, num_channels
         assert num_channels == defined_num_channels
         num_samples = sum(self.valid_data_entries)
         
         if self.debug:
+            print 'self.valid_data_entries', self.valid_data_entries, 'np.squeeze(self.valid_data_entries)', np.squeeze(self.valid_data_entries)
+            print 'defined_num_channels', defined_num_channels, 'num_channels', num_channels
             print 'num_samples', num_samples, 'num_timesteps', num_timesteps
             if self.train_network or self.direction == 'reverse':
                 print 'num_channels', num_channels, 'response_data.shape', self.response_data.shape
