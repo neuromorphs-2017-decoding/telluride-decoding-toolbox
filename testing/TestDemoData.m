@@ -336,7 +336,7 @@ end
 %%
 figure(4);
 
-semilogx(kValues, representation_results);
+semilogx(kRepresentationValues, representation_results);
 xlabel('Regularization Value (K)');
 ylabel('Correlation');
 legend(audioRepresentations, 'Location', 'Best');
