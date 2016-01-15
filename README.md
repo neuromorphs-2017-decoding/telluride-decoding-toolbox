@@ -1,10 +1,12 @@
 # Telluride Decoding Toolbox.
-Sahar Akram (UMD), Alain de Chevigne (ENS), Peter Diehl (ETH), 
+Sahar Akram (UMD), Alain de Chevigne (ENS), Peter Udo Diehl (ETH), 
 Jens Hjortjaer (DTU), Nima Mesgarani (Columbia), Lucas Parra (NYU), 
 Shihab Shamma (UMD), Malcolm Slaney (Google), Daniel Wong (ENS)
 
 Full documentation is available at: 
 https://docs.google.com/document/d/1PYBzEE_aJ5_DpI2AnYKffa3ieckXuSb0eJUTvL1OVlI/edit?usp=sharing
+
+Home page is at: http://www.ine-web.org/software/decoding/
 
 Our goal is to provide a standard set of tools that allow users to decode 
 brain signals into the signals that generated them, 
