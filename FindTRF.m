@@ -37,11 +37,11 @@ function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, 
 %                 An additional input K specifies the regularization term
 %                 Possible inputs:
 %                 - 'Shrinkage', K (Default) (default K=0.2, range [0:1])
-%                 - 'Ridge', K (default K=[10 1], ranges [0:Inf] [0 1]) : ridge regression 
+%                 - 'Ridge', K (default K=[10 0], ranges [0:Inf] [0 1]) : ridge regression 
 %                      K(2) specifies the order of the derivative of the
 %                      penalty (0: normal ridge, 1: first order derivative)
 %                      (see Lalor et al 2006: The VESPA) 
-%                 - 'NRC', K (default K=0.99, range [0:1]) :  normalized reverse correlation
+%                 - 'LRA', K (default K=0.99, range [0:1]) :  low rank approximation
 %                 - 'Lasso', K (default K=[.01 1], range [0:Inf, 0:1]) : lasso / elastic net.
 %                      Uses matlab's lasso (needs statistics toolbox).
 %                      K(2) controls the degree of L1 penalty (elastic net)
@@ -108,8 +108,8 @@ if ~isempty(stimulus)
             case 'shrinkage'
                 K=.2;
             case 'ridge'
-                K=[10,1];
-            case 'nrc'
+                K=[10,0];
+            case 'lra'
                 K=.99;
             case 'lasso'
                 K=[0.01,1];
@@ -192,10 +192,10 @@ if ~isempty(stimulus)
                 if K(2)~=1, warning('Only derivative order 0 or 1 allowed. Using 1'), end
             end
             g=(XX+K(1)*M)\XY';
-        case 'nrc' 
+        case 'lra' 
             [u,s,v] = svd(XX);
             energy = cumsum(diag(s)./sum(diag(s)));
-            limit = find(energy>K, 1);
+            limit = find(energy>K(1), 1);
             newDiag = 1./diag(s);
             if ~isempty(limit) && limit+1 <= length(newDiag)
                 newDiag(limit+1:end) = 0;
@@ -261,7 +261,7 @@ if 0  % example using forward mapping:
     disp('You should have peaks in the impulse responses at samples 50 and 64');
 
     testStim = TrainStim + noiselevel*randn(size(TrainStim)); % test stimulus with new noise
-    [~,predResp] = TRF([], [], 1, testStim, g, lags, 'NRC',[],1);
+    [~,predResp] = TRF([], [], 1, testStim, g, lags, 'LRA',[],1);
     
     subplot(2,1,2);
     t=501:650; plot(t, TrainResp(t,1)/max(TrainResp(:)), t, predResp(t)/max(predResp(:)),'r')
