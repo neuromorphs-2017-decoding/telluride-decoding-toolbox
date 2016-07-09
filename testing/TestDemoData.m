@@ -30,8 +30,6 @@ for i=1:length(data.eeg)
     down_eeg{i} = resample_fft(data.eeg{i}, oldFs, newFs);
 end
 
-nTrials = size(eeg_data,3);
-
 %%
 % Now create a model for each trial.
 Lags = 0:round(newFs/3);
@@ -105,14 +103,15 @@ end
 %%
 
 figure(2); clf
-plot([self_correlation' meanmodel_correlation' cleanmodel_correlation' random_correlation' ])
+plot([self_correlation' meanmodel_correlation' ...
+    cleanmodel_correlation' random_correlation' ], 'LineWidth', 2)
 legend('Self Correlation', 'Mean Model Correlation', 'Jackknife Model Correlation', 'Random Model Correlation');
 xlabel('Trial Number'); ylabel('Correlation between intensity and prediction');
 title('Demo Data Model Correlation');
 
 %%
 kValues = [.01 0.1 0.2 0.5 1 2 4 8 16 32 64];
-methodValues = {'None', 'Shrinkage', 'Ridge', 'NRC', 'CCA', 'DNN'};
+methodValues = {'None', 'Shrinkage', 'Ridge', 'LRA', 'CCA', 'DNN'};
 regular_results = zeros(length(kValues), length(methodValues));
 
 for mi = 1:length(methodValues)         % By Model
@@ -132,6 +131,10 @@ for mi = 1:length(methodValues)         % By Model
         model = cell(1,length(down_eeg));
         for i=1:length(data.eeg)
             stimulus_number = mod(i-1,4) + 1;
+            % Note, this will generate Matlab warnings about "Matrix is
+            % close to singular." This happens because we are exploring 
+            % the entire range of parameter values, and many are not 
+            % reasonable values.
             model{i} = FindTRF(down_wav{stimulus_number}, ...
                 down_eeg{i}, -1, [], [], Lags, Method, K);
         end
@@ -209,7 +212,17 @@ testmodel_dnn = [];
 for mi = 1:length(methodValues)         % By Model
     Method = methodValues{mi};
     if ~strcmp(Method, 'DNN'); continue; end
-    
+    regular_results(:,mi) = nan;
+    cmd = which('DNNRegression.py');
+    if isempty(cmd)
+        fprintf('Can''t find the DNNRegression.py file. Not doing DNN test.\n'); 
+        break
+    end
+    [err,status] = system(cmd);
+    if err
+        fprintf('DNN training command failed. Not doing test.\n');
+        break
+    end
     Lags = round(newFs/3);
     maxFrames = 0;
     for i=1:length(down_eeg)        % Find the longest, we'll shorten later
@@ -255,7 +268,7 @@ methodLegend{1} = 'No Regularization';
 for i=1:4
     methodLegend{i} = ['Linear - ' methodLegend{i}];
 end
-semilogx(kValues, regular_results);
+semilogx(kValues, regular_results, 'LineWidth', 2);
 xlabel('Regularization Value (K)');
 ylabel('Correlation');
 legend(methodLegend, 'Location', 'Best');
@@ -336,7 +349,8 @@ end
 %%
 figure(4);
 
-semilogx(kRepresentationValues, representation_results);
+semilogx(kRepresentationValues, representation_results, ...
+    'LineWidth', 2);
 xlabel('Regularization Value (K)');
 ylabel('Correlation');
 legend(audioRepresentations, 'Location', 'Best');

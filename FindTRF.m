@@ -210,7 +210,7 @@ if ~isempty(stimulus)
         case 'none'
             g=XX\XY';
         otherwise
-si            error('unknown method')
+            error('unknown method')
     end
 end
 
@@ -261,7 +261,7 @@ if 0  % example using forward mapping:
     disp('You should have peaks in the impulse responses at samples 50 and 64');
 
     testStim = TrainStim + noiselevel*randn(size(TrainStim)); % test stimulus with new noise
-    [~,predResp] = TRF([], [], 1, testStim, g, lags, 'LRA',[],1);
+    [~,predResp] = FindTRF([], [], 1, testStim, g, lags, 'LRA',[],1);
     
     subplot(2,1,2);
     t=501:650; plot(t, TrainResp(t,1)/max(TrainResp(:)), t, predResp(t)/max(predResp(:)),'r')

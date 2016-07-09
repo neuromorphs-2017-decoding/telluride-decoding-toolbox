@@ -94,3 +94,5 @@ for c=1:nEEGChannels
     response(:,c) = attendedResponse + unattendedResponse + ...
         3*randn(size(attendedResponse));
 end
+clear attendedResponse unattendedResponse
+

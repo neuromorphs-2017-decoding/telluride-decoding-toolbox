@@ -17,7 +17,7 @@ if ~exist('valid', 'var'), valid = []; end;
 if ~exist('verbosity','var'), verbosity = 0; end;
 
 
-cmdName = which('DNNregression.py');    % Look for the python script
+cmdName = which('DNNRegression.py');    % Look for the python script
 if isempty(cmdName), error('Can''t find the DNNregression.py file.'); end;
 yamlName = which('network.yaml');        % Look for network description
 if isempty(yamlName), error('Can''t find the network.yaml file.'); end;
@@ -34,7 +34,7 @@ end
 
 if ~isempty(stimulus) && ~isempty(response)
     % Model prediction function calls looks like this:
-    %   python DNNregression.py -t -m "./network.yaml"
+    %   python DNNRegression.py -t -m "./network.yaml"
     %       -s "trainUnattendedAudio.mat" \
     %       -r "trainResponse.mat" -w "./network_best_3.pkl" --debug
     
