@@ -1,4 +1,4 @@
-function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, K, doscale, Valid)
+function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, K, doscale, Valid, seg, gpu)
 % FindTRF - Find the temporal response function connecting stimulus and
 % response.
 % [g,pred] = TRF(stimulus, response, Dir, testdata, g, Lags, Method, K, doscale)
@@ -49,7 +49,10 @@ function [g,pred] = FindTRF(stimulus, response, Dir, testdata, g, Lags, Method, 
 %                 - 'None' : no regularization, use ordinary least-squares
 %      K          - Regularization parameter(s)
 %      doscale    - Option to scale inputs to zero mean and std 1 (Default on)
-%      Valid      - (time x 1) vector: zeros are marked as non-valid data and left out 
+%      Valid      - (time x 1) vector: zeros are marked as non-valid data and left out
+%      seg        - Number of segments in which to divide stimulus and response data when computing
+%                   outer-product matrices. This is useful for reducing memory usage. (default=1)
+%      gpu        - Whether to use the GPU (logical, default=false)
 % 
 %   Returns:
 %      g: the TRF function.  It will have a size of
@@ -82,11 +85,20 @@ if ~exist('testdata','var') || isempty(testdata)
     pred = [];
 end
 
+if ~exist('seg','var')
+    seg = 1;
+end
+
+if ~exist('gpu','var')
+    gpu = false;
+end
+
 if ~isempty(stimulus)
     if strcmp(Method,'lasso') && ~license('test', 'statistics_toolbox')
                 error('Statistics toolbox needed for lasso')
         error('You need to have the statistics toolbox to use the Lasso method.');
-    end  
+    end
+    assert(~gpu || exist('gather','file'), 'Parallel computing toolbox needed for GPU processing.');
     % Figure out the inputs and outputs from the regression. 
     % We are given x and we want to find Y.
     if Dir > 0              % Forward direction, from stimulus to response
@@ -158,7 +170,7 @@ end
 
 if ~isempty(stimulus)
     
-    if exist('Valid','var')
+    if exist('Valid','var') && ~isempty(Valid)
         if size(Valid,1) ~= size(x,1)
             error('Valid vector must match the # of samples in stim/resp')
         end
@@ -173,17 +185,31 @@ if ~isempty(stimulus)
         x = dozscore(x); 
         Y = dozscore(Y);
     end
-        
-    X = LagGenerator(x,Lags);
     
-    XX = X' * X;
-    XY = Y' * X;  
+    % Compute XX and XY
+    XX = zeros(size(x,2)*length(Lags),size(x,2)*length(Lags));
+    XY = zeros(size(Y,2),size(x,2)*length(Lags));
+    seglen = ceil(size(x,1)/seg);
+    Ygpu = gpuConvert(Y,gpu);
+    for ii = 1:seg
+        segix = seglen*(ii-1)+1:min(seglen*ii,size(x,1));
+        X = LagGenerator(x(segix,:),Lags); X = gpuConvert(X,gpu);
+        XX = XX + gpuGather(X'*X,gpu);
+        XY = XY + gpuGather(Ygpu(segix,:)'*X,gpu);
+    end
+    clear Ygpu
+%     X = LagGenerator(x,Lags);
+%     
+%     XX = X' * X;
+%     XY = Y' * X;  
 
     switch Method
         case 'shrinkage'
+            XX = gpuConvert(XX,gpu); XY = gpuConvert(XY,gpu);
             XX = (1-K)*XX + K*mean(eig(XX))*eye(length(XX));
-            g=XX\XY';
+            g=gpuGather(XX\XY',gpu);
         case 'ridge'
+            XX = gpuConvert(XX,gpu); XY = gpuConvert(XY,gpu);
             if length(K)==1,K(2)=1;end
             if K(2)==0;
                 M = eye(size(XX));    
@@ -191,8 +217,9 @@ if ~isempty(stimulus)
                 M = 2*eye(size(XX))-diag(ones(size(XX,1)-1,1),1)-diag(ones(size(XX,1)-1,1),-1); M([1 end]) = 1;
                 if K(2)~=1, warning('Only derivative order 0 or 1 allowed. Using 1'), end
             end
-            g=(XX+K(1)*M)\XY';
+            g=gpuGather((XX+K(1)*M)\XY',gpu);
         case 'lra' 
+            XX = gpuConvert(XX,gpu); XY = gpuConvert(XY,gpu);
             [u,s,v] = svd(XX);
             energy = cumsum(diag(s)./sum(diag(s)));
             limit = find(energy>K(1), 1);
@@ -201,14 +228,15 @@ if ~isempty(stimulus)
                 newDiag(limit+1:end) = 0;
             end
             RRinv = v*diag(newDiag)*u';
-            g=RRinv * XY';
+            g=gpuGather(RRinv * XY',gpu);
         case 'lasso'
             if length(K)==1,K(2)=1;end
             for ii=1:size(XY,1)
                 g(:,ii) = lasso(XX,XY(ii,:),'Lambda',K(1),'Alpha',K(2),'RelTol',1e-3);
             end
         case 'none'
-            g=XX\XY';
+            XX = gpuConvert(XX,gpu); XY = gpuConvert(XY,gpu);
+            g=gpuGather(XX\XY',gpu);
         otherwise
             error('unknown method')
     end
@@ -237,6 +265,20 @@ function out = dozscore(in)
         stdin = max(stdin, max(stdin)/1000);    
         in = bsxfun(@minus,in,muin);
         out = bsxfun(@rdivide,in,stdin);
+end
+
+function X = gpuConvert(X,gpu)
+    % Helper function for getting variables onto the GPU
+    if gpu && exist('gpuDeviceCount','file') && gpuDeviceCount() > 0
+        X=gpuArray(X);
+    end
+end
+
+function X = gpuGather(X,gpu)
+    % Helper function for getting variables off GPU
+    if gpu && exist('gather','file') && gpuDeviceCount() > 0
+        X=gather(X);
+    end
 end
 
 
