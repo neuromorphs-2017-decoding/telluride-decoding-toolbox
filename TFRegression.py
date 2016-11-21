@@ -1,310 +1,361 @@
-% Code to implement decoding using Google's Tensorflow machine-learning system.
-% This version only uses a single layer with a rectified linear unit (RELU) but
-% does not (yet) do a good job decoding EEG data.
+# -*- coding: utf8 -*-
+"""EEG Regression - Core TensorFlow implementation code.
 
-% By Malcolm Slaney, Google Machine Hearing Project
-% malcolm@ieee.org, malcolmslaney@google.com
+July 2016
 
-import math, random, sys
-import matplotlib.pyplot as plot
-import numpy as np
-from scipy.io import loadmat
+"""
+
 import tensorflow as tf
+import numpy as np
+import math, random, sys, time
+import numpy.matlib
+import matplotlib.pyplot as plot
+import scipy.io as sio   # for loadmat
 
-# Create and use a simple Tensorflow network to predict the (EEG) response from
-# a stimulus (e.g. audio intensity). '''
-class RegressionNetwork:
-  kStimulusChannels = 1       # Only one channel of input
+def LagData(data, lags):
+  '''Add temporal context to an array of observations. The observation data has
+  a size of N observations by D feature dimensions. This routine returns the new
+  data with context, and also array of good rows from the original data. This list
+  is important because depending on the desired temporal lags, some of the 
+  original rows are dropped because there is not enough data. 
   
-  def __init__(self, channel_count, half_width = 13, single_sided = True):
-    '''Initialize the network with the number of response channels, the size 
-    of the filter to predict, and whether we want a single-sided or double-sided
-    in time prediction.'''
-    self.channel_count = channel_count    # Response channels
-    self.half_width = half_width          # Width of filter on each side of zero
-    self.single_sided = single_sided      # One or two sided filter (+/- time)
-    # Now the internal variables
-    self.tResponse = None     # Placeholder for response signal
-    self.tStimulus = None     # Placeholder for stimulus signal
-    self.tW = None            # TF matrix with the regression matrix
-    self.tTrain = None        # TF object used to train the network
-    self.tLinear = None       # TF object before RELU
-    self.tPrediction = None   # TF output variable
-    self.tInit = None         # TF initialization object
-    self.tLoss = None         # TF loss object
-    # Running variables
-    self.session = None
-    self.print_loss_interval = 20 # How often to print the network loss
-    self.learning_rate = 1e-3
+  Using negative lags grab data from earlier (higher) in the data array. While
+  positive lags are later (lower) in the data array.
+  '''
+  if type(lags) == list:
+    lags = np.array(lags)
+  num_samples = data.shape[0]   # Number of samples in input data
+  orig_features_count = data.shape[1]
+  new_features_count = orig_features_count*len(lags)
+  
+  # We reshape the data into a array of size N*D x 1.  And we enhance the lags
+  # to include all the feature dimensions which are stretched out in "time".
+  unwrapped_data = data.reshape((-1, 1))
+  expanded_lags = (lags*orig_features_count).reshape(1, -1).astype(int)
+  
+  # Now expand the temporal lags array to include all the new feature dimensions
+  offsets = numpy.matlib.repmat(expanded_lags, orig_features_count, 1) + \
+  numpy.matlib.repmat(np.arange(orig_features_count).reshape(orig_features_count, 
+                                 1), 1, 
+            expanded_lags.shape[0])
+  offsets = offsets.T.reshape(1, -1)
+  
+  indices = numpy.matlib.repmat(offsets, num_samples, 1)
+  hops = np.arange(0, num_samples).reshape(-1, 1)*orig_features_count
+  hops = numpy.matlib.repmat(hops, 1, hops.shape[1])
+  if 0:
+    print "Offsets for unwrapped features:", offsets
+    print "Offset indices:", indices
+    print "Starting hops:", hops
+    print "Indices to extract from original:", indices+hops
+  
+  new_indices = offsets + hops
+  good_rows = numpy.where(numpy.all((new_indices >= 0) & 
+                  (new_indices < unwrapped_data.shape[0]), 
+                  axis=1))[0]
+  new_indices = new_indices[good_rows, :]
+  new_data = unwrapped_data[new_indices].reshape((-1, new_features_count))
+  return new_data, good_rows
+
+def TestLagData():
+  input_data = np.arange(20).reshape((10,2))
+  print "Input array:", input_data
+  (new_data, good_rows) = LagData(input_data, np.arange(-1,2))
+  print "Output array:", new_data
+  print "Good rows:", good_rows
+
+# Use TF to compute the Pearson Correlation of a pair of 1-dimensional vectors.
+# From: https://en.wikipedia.org/wiki/Pearson_product-moment_correlation_coefficient
+def PearsonCorrelationTF(x, y, prefix = 'pearson'):
+  '''Create a TF network that calculates the Pearson Correlation on two input
+  vectors.  Returns a scalar tensor with the correlation [-1:1].'''
+  with tf.name_scope(prefix):
+    n = tf.to_float(tf.shape(x)[0])
+    x_sum = tf.reduce_sum(x)
+    y_sum = tf.reduce_sum(y)
+    xy_sum = tf.reduce_sum(tf.mul(x, y))
+    x2_sum = tf.reduce_sum(tf.mul(x, x))
+    y2_sum = tf.reduce_sum(tf.mul(y, y))
     
-  def Create(self):
-    '''Create a Tensorflow convolutional network that predicts stimulus from the
-    response.'''
-    self.tResponse = tf.placeholder(tf.float32, 
-      shape=[1, self.channel_count, None, 1,], 
-    	name='response')
-    self.tStimulus = tf.placeholder(tf.float32, 
-      shape=[1, RegressionNetwork.kStimulusChannels, None, 1], 
-    	name='stimulus_prediction')
-    
-    if self.single_sided:
-      w_shape = [self.channel_count,self.half_width,1,1]
-      self.tW = tf.Variable(tf.random_uniform(w_shape, -1.0, 1.0),
-    	  name='ReconstructionFilter')
+    r_num = tf.sub(tf.mul(n, xy_sum), tf.mul(x_sum, y_sum))
+    r_den_x = tf.sqrt(tf.sub(tf.mul(n, x2_sum), tf.mul(x_sum, x_sum)))
+    r_den_y = tf.sqrt(tf.sub(tf.mul(n, y2_sum), tf.mul(y_sum, y_sum)))
+    r = tf.div(r_num, tf.mul(r_den_x, r_den_y), name='r')
+  return r
+
+def ComputePearsonCorrelation(x, y):
+  '''Compute the Pearson's correlation between two numpy vectors (1D only)'''
+  n = x.shape[0]
+  x_sum = np.sum(x)
+  y_sum = np.sum(y)
+  xy_sum = np.sum(x*y)
+  x2_sum = np.sum(x*x)
+  y2_sum = np.sum(y*y)
+  r_num = n*xy_sum - x_sum*y_sum
+  r_den_x = math.sqrt(n*x2_sum - x_sum*x_sum)
+  r_den_y = math.sqrt(n*y2_sum - y_sum*y_sum)
+  
+  return r_num/(r_den_x*r_den_y)
+  
+# Code to check the Pearson Correlation calculation.  Create random data, 
+# calculate its correlation, and output the data in a form that is easy to
+# paste into Matlab.  Also compute the correlation with numpy so we can compare. 
+# Values should be identical.
+def TestPearsonCorrelation(N=15):
+  x = tf.to_float(tf.random_uniform([N], -10, 10, tf.int32))
+  y = tf.to_float(tf.random_uniform([N], -10, 10, tf.int32))
+  init = tf.initialize_all_variables()
+  
+  r = PearsonCorrelationTF(x, y)
+  
+  borg_session = ''  # 'localhost:' + str(FLAGS.brain_port)
+  with tf.Session(borg_session) as sess:
+    sess.run(init)
+    x_data, y_data, r_data = sess.run([x, y, r], feed_dict={})
+    print 'x=', x_data, ';'
+    print 'y=', y_data, ';'
+    print 'r=', r_data, ';'
+    print 'Expected r is', ComputePearsonCorrelation(x_data, y_data)
+
+# Create a TF network to find values with a two level network that predicts 
+# y_data from x_data.  Only set the correlation_loss argument to true if
+# predicting one-dimensional data.
+def CreateRegressionNetwork(input_d, output_d, num_hidden=20, 
+              learning_rate=0.01, correlation_loss=False):
+  g = tf.Graph()
+  with g.as_default():
+    x1 = tf.placeholder(tf.float32, shape=(None, input_d), name='x1') # Will be batch_size x input_d
+    W1 = tf.Variable(tf.random_uniform([input_d,num_hidden], -1.0, 1.0), name='W1')  # input_d x num_hidden
+    b1 = tf.Variable(tf.zeros([num_hidden]), name='bias1')
+    y1 = tf.nn.relu(tf.nn.bias_add(tf.matmul(x1,W1), b1), name='y1') # batch_size x num_hidden
+  
+    W2 = tf.Variable(tf.random_uniform([num_hidden,output_d], -1.0, 1.0), name='W2')
+    b2 = tf.Variable(tf.zeros([output_d]), name='b2')
+    y2 = tf.nn.bias_add(tf.matmul(y1,W2), b2, name='y2') # Will be batch_size x output_d
+    ytrue = tf.placeholder(tf.float32, shape=(None, output_d), name='ytrue') # num_batch x output_d
+  
+    if correlation_loss:
+      # Compute the correlation
+      r = PearsonCorrelationTF(ytrue, y2)
+      tf.scalar_summary('correlation', r)
+      loss = tf.neg(r, name='loss_pearson')
     else:
-      w_shape = [self.channel_count,2*self.half_width+1,1,1]
-      self.tW = tf.Variable(tf.random_uniform(w_shape, -1.0, 1.0),
-    	  name='ReconstructionFilter')
-    self.tLinear = tf.nn.conv2d(self.tResponse, self.tW, (1,1,1,1), 
-      "VALID", name='conv_output')
-    self.tPrediction = tf.nn.relu(self.tLinear, name="RELU")
-    
-    # Minimize the mean squared errors.
-    error = tf.square(self.tPrediction - self.tStimulus)
-    self.tLoss = tf.reduce_mean(error)
-    if 0:
-      # Fewer iterations needed for Test().
-      optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
-    else:
-      # This seems to be more reliable for true data (without need for scaling)
-      # http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf
-      optimizer = tf.train.RMSPropOptimizer(self.learning_rate, 
-        self.learning_rate/2)
-    self.tTrain = optimizer.minimize(self.tLoss)
-    
+      # Minimize the mean squared errors.
+      loss = tf.reduce_mean(tf.square(y2 - ytrue), name='loss_euclidean')
+      tf.scalar_summary('loss', loss)
+  
+    # https://www.quora.com/Which-optimizer-in-TensorFlow-is-best-suited-for-learning-regression
+    # optimizer = tf.train.AdadeltaOptimizer(learning_rate)
+    # optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+    optimizer = tf.train.AdamOptimizer(learning_rate)
+    train = optimizer.minimize(loss)
+  
     # Before starting, initialize the variables.  We will 'run' this first.
-    self.tInit = tf.initialize_all_variables()
-  
-  def Optimize(self, TrainingStim, TrainingResp, iterations=200, batch_size=100):
-    '''Optmize the network given the stimulus and the response.  In both cases
-    the data is N_times x N_channels numpy array.  There is 1 stimulus channel,  
-    and self.channel_count response channels. '''
-    if not isinstance(TrainingStim, np.ndarray):
-      raise TypeError("Stimulus must be an numpy array")
-    if TrainingStim.shape[1] != 1:
-      raise ValueError("Stimulus must be Nx1 in size")
-    num_train_frames = TrainingStim.shape[0]
-    if not isinstance(TrainingResp, np.ndarray):
-      raise TypeError("Training response must be an numpy array")
-    if TrainingResp.shape[0] != num_train_frames:
-      raise ValueError("Stimulus and response must both have same # rows")
-    if TrainingResp.shape[1] != self.channel_count:
-      raise ValueError("Response must have %d rows" % self.channel_count)
-    # Launch the graph.
-    if self.session == None:
-      self.session = tf.Session()
-      self.session.run(self.tInit)
-    TrainingResp = TrainingResp.T
-    TrainingStim = TrainingStim.T
-    if self.single_sided:
-      delta =- self.half_width + 1
-      for iter_num in xrange(iterations):
-        # Pick a random piece of the training data for this minibatch.
-        start = random.randint(self.half_width+delta, num_train_frames-batch_size)
-        end = start + batch_size
-        resp_feed = np.reshape(TrainingResp[:,start:end],
-                               (1,self.channel_count,-1,1))
-        # First half_width/2 input examples are dropped, but that's ok, 
-        # because we want the first output sample to line up.  
-        # So actual start is 0.
-        stim_piece = TrainingStim[:,start+self.half_width-1+delta:end+delta]
-        stim_feed = np.reshape(stim_piece, (1,1,-1,1))
-        [loss_value,train_value,conv_filter,prediction_value] = \
-          self.session.run([self.tLoss,self.tTrain,self.tW,self.tPrediction], 
-                            feed_dict={self.tResponse: resp_feed, 
-      			                           self.tStimulus: stim_feed})
-        if self.print_loss_interval > 0 and iter_num % self.print_loss_interval == 0:
-          print loss_value
-          plot.clf()
-          plot.plot(np.hstack((stim_piece.T,prediction_value.reshape((1,-1)).T)))
-          plot.title('Step %d' % iter_num)
-          plot.legend(('Stimulus','Prediction'))
-          plot.gcf().canvas.draw()
-          plot.show(block=False)
-    else:
-      for iter_num in xrange(iterations):
-        start = random.randint(self.half_width, num_train_frames-batch_size)
-        end = start + batch_size
-        resp_feed = np.reshape(TrainingResp[:,start:end],
-                                (1,self.channel_count,-1,1))
-        # Because of VALID in convolution, output is shrunk by half_width on both
-        # ends
-        stim_piece = TrainingStim[:,start+self.half_width:end-self.half_width]
-        stim_feed = np.reshape(stim_piece, (1,1,-1,1))
-        [loss_value,train_value,conv_filter,prediction_value] = \
-          self.session.run([self.tLoss,self.tTrain,self.tW,self.tPrediction], 
-      					           feed_dict={self.tResponse: resp_feed, 
-      						                    self.tStimulus: stim_feed})
-        if self.print_loss_interval > 0 and iter_num % self.print_loss_interval == 0:
-          print loss_value
-          plot.clf()
-          plot.plot(np.hstack((stim_piece.T,prediction_value.reshape((1,-1)).T)))
-          plot.title('Step %d' % iter_num)
-          plot.legend(('Stimulus','Prediction'))
-          plot.gcf().canvas.draw()
-          plot.show(block=False)
-    return (stim_piece, resp_feed,prediction_value)      # For testing
-  
-  def RetrieveFilter(self):
-    '''Retrieve the filter that has been learned.  Returns an numpy array.'''
-    if self.session == None:
-      return None
-    conv_filter = self.session.run(self.tW)
-    return conv_filter.squeeze().T
-    
-  def Predict(self, response):
-    '''Given some new response data (in the form of an numpy array), use the 
-    model to predict the original stimulus (which is returned as a Nx1 numpy
-    array.)'''
-    if not isinstance(response, np.ndarray):
-      raise TypeError("Training response must be an numpy array")
-    if response.shape[1] != self.channel_count:
-      raise ValueError("Response must have %d rows" % self.channel_count)
-    if self.session == None:
-      self.session = tf.Session()
-      self.session.run(self.tInit)
-    response = response.T
-    if self.single_sided:
-      delta =- self.half_width + 1
-      resp_feed = np.reshape(response, (1,self.channel_count,-1,1))
-        # First half_width/2 input examples are dropped, but that's ok, 
-        # because we want the first output sample to line up.  
-        # So actual start is 0.
-      prediction = self.session.run(self.tPrediction, 
-                            feed_dict={self.tResponse: resp_feed})
-      padding = np.zeros((self.half_width-1, 1))
-      padded_prediction = np.vstack((
-        prediction.reshape(RegressionNetwork.kStimulusChannels, -1).T,
-        padding))
-    else:
-      resp_feed = np.reshape(response, (1,self.channel_count,-1,1))
-      # Because of VALID in convolution, output is shrunk by half_width on both
-      # ends
-      prediction = self.session.run(self.tPrediction, 
-    					           feed_dict={self.tResponse: resp_feed})
-      padding = np.zeros((self.half_width, 1))
-      padded_prediction = np.vstack((padding, 
-        prediction.reshape(RegressionNetwork.kStimulusChannels, -1).T,
-        padding))
-    return padded_prediction
-    
-  @staticmethod
-  def Test(singleSided = True, iterations=2000, batch_size=200):
-    '''Test the reconstruction process with a known signal.  This is a 
-    static method so it can allocate the network object, design the network,
-    optimize it, and measure the final performance.  Training and testing on 
-    the same data, so the correlation values at the end should be nearly 1.'''
-    # Generate the good part of the stimulus, 1 channel over time
-    N = 10000
-    s = np.random.randn(N, 1)
-    StimulusData = np.select([s<0, s>=0], [0*s, s])
-    nStimulusChannels = 1
-    # StimulusData = np.select([StimulusData < 0, StimulusData >= 0], 
-    #                          [0, StimulusData])
-    # Create the response.  
-    # First channel is 0.5 times current time, plus 0.25 times previous time.  
-    # Second channel is all noise.
-    ResponseData = np.hstack((StimulusData[:,:] * 0.5 +
-    			  np.vstack((StimulusData[1:,:], np.zeros((1,1)))) * 0.25,
-    			 np.random.randn(N,1)))
-    # Do the training/testing split
-    kNumTestFrames=1000
-    TestingTimes = np.arange(kNumTestFrames) # Grab first 1000 samples for testing
-    TrainingTimes = np.arange(kNumTestFrames, N)
+    init = tf.initialize_all_variables()
+    saver = tf.train.Saver()
+    merged_summaries = tf.merge_all_summaries()
+  return g, train, loss, init, x1, y2, ytrue, merged_summaries, saver
 
-    TrainingStim = StimulusData[TrainingTimes,:]
-    TrainingResp = ResponseData[TrainingTimes,:]
-    TestingStim = StimulusData[TestingTimes,:]
-    TestingResp = ResponseData[TestingTimes,:]
-    
-    kChannelCount = 2				# EEG Convolution Size
-    kHalfWidth = 13
-    
-    regressor = RegressionNetwork(kChannelCount, kHalfWidth, singleSided)
-    regressor.Create()
-    # regressor.learning_rate = 0.5
-    regressor.Optimize(TrainingStim, TrainingResp, \
-      iterations=iterations, batch_size=batch_size)
-    # Now plot the results.  First channel's filter should oscillate and decay by
-    # 50% at each time step. Second channel's filter is zero since it is noise.
-    conv_filter = regressor.RetrieveFilter()
-    plot.clf()
-    if singleSided:
-      plot.plot(np.arange(0,kHalfWidth).reshape(-1,1),conv_filter)
+def TrainDNNRegression(x_data, y_data, x_test=None, y_test=None, num_hidden=20, 
+          learning_rate=0.5, training_steps=6000, batch_size=40,
+          reporting_fraction=None, correlation_loss=False,
+          tensorboard_dir='/tmp', model_save_file=None):
+  '''Train a DNN Regressor, using the x_data to predict the y_data.
+  If test data is provided, also run the test data and compute its
+  correlation so we can monitor for overfitting.  The batch_size
+  and training_steps determine how much data is fed in at a time, 
+  and for how many epochs. Report periodically, every 
+    training_steps*reporting_fraction
+  epochs.  The loss function is Euclidean (L2) unless the 
+  correlation_loss parameter is true.  Output the final model
+  to the model_save_file.  '''
+  (g, train, loss, init, x1, y2, ytrue, merged_summaries, saver) = \
+    CreateRegressionNetwork(x_data.shape[1],  y_data.shape[1], 
+                            num_hidden=num_hidden, 
+                            learning_rate=learning_rate, 
+                            correlation_loss=correlation_loss)
+  borg_session = ''  #'localhost:' + str(FLAGS.brain_port)
+  y2_test_value = None
+  with tf.Session(borg_session, graph=g) as sess:
+    train_writer = tf.train.SummaryWriter(tensorboard_dir + '/train', g)
+    test_writer = tf.train.SummaryWriter(tensorboard_dir + '/test')
+    sess.run(init)
+    if reporting_fraction is None:
+      reporting_fraction = .1
+    # Train the model for training_steps epochs
+    for step in xrange(training_steps):
+      ri = numpy.floor(numpy.random.rand(batch_size)*x_data.shape[0]).astype(int)
+      training_x = x_data[ri,:]
+      training_y = y_data[ri,:]
+      # print training_x.shape, training_y.shape
+      _, loss_value, y2_value, summary_values = \
+        sess.run([train, loss, y2, merged_summaries],
+                 feed_dict={x1: training_x, ytrue: training_y})
+      train_writer.add_summary(summary_values, step)
+      if step % int(training_steps*reporting_fraction) == 0:
+        print step, loss_value # , training_x.shape, training_y.shape
+        # Run the model over the test data.
+        if x_test is not None:
+          # print "x_test is", x_test.shape, " y_test is", y_test.shape
+          (y2_value, summary_values) = sess.run([y2, merged_summaries], 
+                                                feed_dict={x1: x_test, 
+                                                           ytrue: y_test})
+          test_writer.add_summary(summary_values, step)
+      if model_save_file:
+        save_path = saver.save(sess, model_save_file)
+    if x_test is not None:
+      # print "x_test is", x_test.shape, " y_test is", y_test.shape
+      (y2_value, summary_values) = sess.run([y2, merged_summaries], 
+                                            feed_dict={x1: x_test, 
+                                                       ytrue: y_test})
+    return y2_value, loss_value
+
+def EvalDNNRegression(x_data, model_save_file, output_dimensions=1, num_hidden=20, 
+                      correlation_loss=False):
+  (g, train, loss, init, x1, y2, ytrue, merged_summaries, saver) = \
+  CreateRegressionNetwork(x_data.shape[1], output_dimensions, 
+              num_hidden=num_hidden, learning_rate=0, 
+              correlation_loss=correlation_loss)
+  borg_session = ''
+  with tf.Session(borg_session, graph=g) as sess:
+    print "EvalDNNRegression: Restoring the model from:", model_save_file
+    saver.restore(sess, model_save_file)
+    sess.run(init)
+    [y2_value] = sess.run([y2], feed_dict={x1: x_data})
+    print "In EvalDNNRegression, y2_value type is", type(y2_value)
+    return y2_value
+
+"""Polynomial Fitting.
+
+Now generate some fake test data and make sure we can properly regress the data.
+This is just a polynomial fitting.
+"""
+
+def TestPolynomialFitting():
+  # Create 8000 phony x and y data points with NumPy
+  x_data = 1.2*np.random.rand(8000,1).astype("float32")-0.6
+
+  # Create pointwise 3rd order nonlinearity
+  y_data = (x_data - .5)*x_data*(x_data+0.5) + 0.3
+
+  (y2out, loss_value) = TrainDNNRegression(x_data, y_data, x_data, learning_rate=0.01)
+
+  plot.clf()
+  plot.plot(x_data, y2out, '.', x_data, y_data, '.')
+  plot.xlabel('Input Variable')
+  plot.ylabel('Output Variable')
+  plot.legend(('Prediction', 'Truth'))
+  plot.title('DNN Regression with Euclidean Loss')
+  plot.show()
+
+  (y2out, loss_value) = TrainDNNRegression(x_data, y_data, x_data, correlation_loss=True)
+
+  plot.clf()
+  plot.plot(x_data, y2out, '.', x_data, y_data, '.')
+  plot.xlabel('Input Variable')
+  plot.ylabel('Output Variable')
+  plot.legend(('Prediction', 'Truth'))
+  plot.title('DNN Regression with Correlation Loss')
+  plot.show()
+
+def LoadTellurideDemoData(demo_data_loc):
+  demodata = sio.loadmat(demo_data_loc)
+  print sorted(demodata.keys())
+  fsample = demodata['fsample'][0][0]
+  eeg_data = demodata['eeg'].reshape((32))
+  audio_data = demodata['wav'].reshape((4))
+  print audio_data.shape, audio_data[0].shape
+  print eeg_data.shape, eeg_data[0].shape
+  return (audio_data, eeg_data, fsample)
+  
+def AssembleDemoData(audio_data, eeg_data, trials, max_lag):
+  lags = np.arange(0, int(max_lag))
+  all_eeg = None
+  all_audio = None
+  for t in trials:
+    (laggedEEG, good_eeg_rows) = LagData(eeg_data[t], lags)
+    laggedAudio = audio_data[t%4][good_eeg_rows,0].reshape((-1,1))
+    if all_eeg == None:
+      all_eeg = laggedEEG
     else:
-      plot.plot(np.arange(-kHalfWidth, kHalfWidth+1).reshape(-1,1), conv_filter)
-    plot.title('Predicted Filter Response')
-    plot.xlabel('Time')
-    plot.ylabel('Filter Response')
-    # Test the predictions
-    prediction = regressor.Predict(TestingResp)
-    if prediction.shape != TestingStim.shape:
-      raise ValueError("Internal Error: prediction and TestingStim " + 
-        "must be same size.")
-    r = np.corrcoef(TestingStim.T, prediction.T)
-    print "Correlation between test stimulus and prediction is ", r[1,0]
-    return regressor
-    
-def RunRegression(TrainStimulusDataFile, TrainResponseDataFile, \
-  TestStimulusDataFile=None, TestResponseDataFile=None):
-  eegScale = 100
+      all_eeg = np.append(all_eeg, laggedEEG, 0)
+    if all_audio == None:
+      all_audio = laggedAudio
+    else:
+      all_audio = np.append(all_audio, laggedAudio, 0)
+  print "AssembleDemoData:", all_audio.shape, all_eeg.shape
+  return all_audio, all_eeg
+
+def TestNumberHidden(audio_data, eeg_data, fsample, hidden_list=[6]):
+  num_trials = eeg_data.shape[0]
+  frac_correct = np.zeros((num_trials, max(hidden_list)+1))
+  train_loss = np.zeros((num_trials, max(hidden_list)+1))
   
-  m=loadmat(TrainStimulusDataFile)
-  trainStimulusData = m['data']
+  for hidden in hidden_list:
+    for t in range(num_trials):
+      test_set = [t]
+      train_set = list(set(range(num_trials)).difference(test_set))
+      max_lags = fsample*0.25
+      all_audio, all_eeg = AssembleDemoData(audio_data, eeg_data, 
+                                            np.array(train_set), max_lags)
+      test_audio, test_eeg = AssembleDemoData(audio_data, eeg_data, 
+                                            np.array(test_set), max_lags)
+      print "Before TrainDNNRegression:", \
+            all_eeg.shape, all_audio.shape, \
+            test_eeg.shape, test_audio.shape
+      audioPredict, loss = TrainDNNRegression(all_eeg, all_audio, test_eeg, test_audio, 
+                   learning_rate=1, num_hidden=hidden,
+                   reporting_fraction=.1, training_steps=1000,
+                   batch_size=1000, correlation_loss=True,
+                   tensorboard_dir='/tmp/telluride-%03d' % t)
+      print "Before corrcoef:", audioPredict.shape, test_audio.shape
+      c = np.corrcoef(audioPredict.T, test_audio[0:audioPredict.shape[0],:].T)
+      frac_correct[t, hidden] = c[0,1]
+      train_loss[t, hidden] = loss
+      print frac_correct
+      sys.stdout.flush()
+  return frac_correct, train_loss
+
+def RunDemoDataTest(num_trials = 32, hidden_number = 6, 
+                    demo_data_loc = 'testing/DemoDataForTensorFlow.mat'):
+  (audio_data, eeg_data, fsample) = LoadTellurideDemoData(demo_data_loc)
+  frac_correct, train_loss = TestNumberHidden(audio_data, eeg_data[0:num_trials], 
+                                              fsample, [hidden_number])
+  numpy.set_printoptions(linewidth=100000000)
+  print frac_correct
   
-  m = loadmat(TrainResponseDataFile)
-  trainResponseData = m['data']/eegScale
-  newFs = 64;
+  # Save the data across all trials into two files so we can plot them later.
+  frac_name = 'frac_correct_%02d.txt' % hidden_number
+  np.savetxt(frac_name, frac_correct)
+
+  loss_name = 'train_loss_%02d.txt' % hidden_number
+  np.savetxt(loss_name, train_loss)
+  return frac_name, loss_name
+
   
-  if TestStimulusDataFile is not None and TestStimulusDataFile is not "":
-    m = loadmat(TestStimulusDataFile)
-    testStimulusData = m['data']
-  else:
-    testStimulusData = None
-  if TestResponseDataFile is not None and TestResponseDataFile is not "":
-    m = loadmat(TestResponseDataFile)
-    testResponseData = m['data']/eegScale
-  else:
-    testResponseData = None
-  #
-  channel_count = trainResponseData.shape[1]
-  half_width = int(0.25*newFs + 0.9999)
-  single_sided = False
-  regressor = RegressionNetwork(channel_count, half_width, single_sided)
-  # regressor.learning_rate = 0.1
-  # regressor.print_loss_interval = 1
-  regressor.Create()
-  regressor.print_loss_interval = 200
-  (stim_piece, resp_feed,prediction_value) = \
-  regressor.Optimize(trainStimulusData, trainResponseData, 
-                      batch_size=1000, iterations=2000)
+def RunSaveModelTest(demo_data_loc = 'testing/DemoDataForTensorFlow.mat'):
+  (audio_data, eeg_data, fsample) = LoadTellurideDemoData(demo_data_loc)
+  max_lags = fsample*0.25
+  all_audio, all_eeg = AssembleDemoData(audio_data, eeg_data, 
+                                        np.array([0]), max_lags)
+  hidden = 6
+  model_file = '/tmp/regression_model.tf'
+  _, loss = TrainDNNRegression(all_eeg, all_audio, None, None, 
+               learning_rate=1, num_hidden=hidden,
+               reporting_fraction=.1, training_steps=100,
+               batch_size=1000, correlation_loss=True,
+               model_save_file=model_file)
+  audio_prediction2 = EvalDNNRegression(all_eeg, model_file, num_hidden=hidden, 
+                                        correlation_loss=True)
+  print type(audio_prediction2)
+  print "Variance of predictions is:", np.var(audio_prediction2)
+  print 
   
-  if testResponseData == None and testStimulusData == None:
-    prediction = regressor.Predict(trainResponseData)
-    r = np.corrcoef(trainStimulusData.T, prediction.T)
-    dataset = 'training'
-  else:
-    prediction = regressor.Predict(testResponseData)
-    r = np.corrcoef(testStimulusData.T, prediction.T)
-    dataset = 'testing'
-  print "Correlation between %s stimulus and prediction is %g" % \
-    (dataset, r[1,0])
-  
-    
+def regression_main(argv):
+  # TestPolynomialFitting()
+  # RunDemoDataTest(hidden_number = 3, num_trials=3)
+  RunSaveModelTest()
+
 if __name__ == "__main__":
-  print sys.argv, len(sys.argv)
-  if len(sys.argv) != 3 and len(sys.argv) != 5:
-    print "Syntax: %s TrainStimulusDataFile TrainResponseDataFile " % sys.argv[0],
-    print "[TestStimulusDataFile TestResponseDataFile]"
-  else:
-    TrainStimulusDataFile = sys.argv[1]
-    TrainResponseDataFile = sys.argv[2]
-    if sys.argv >= 5:
-      TestStimulusDataFile = sys.argv[3]
-      TestResponseDataFile = sys.argv[4]
-    else:
-      TestStimulusDataFile = None
-      TestResponseDataFile = Nonefg
-    RunRegression(TrainStimulusDataFile, TrainResponseDataFile, \
-      TestStimulusDataFile, TestResponseDataFile)
-      
+  # Just run a test program
+  regression_main(sys.argv)
