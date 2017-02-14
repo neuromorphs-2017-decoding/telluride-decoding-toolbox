@@ -1,5 +1,5 @@
-function [q , q_L, q_U ] = StateSpace2(corr_m, corr_f, max_iterations, debug)
-% function [q , q_L, q_U ] = StateSpace_New(g_a, g_u, TestStim, TestEEG , Fs, TRF_Method, Dir, K, doScale, Lags)
+function [q , q_L, q_U ] = StateSpace(corr_m, corr_f, max_iterations, debug)
+% function [q , q_L, q_U ] = StateSpace(g_a, g_u, TestStim, TestEEG , Fs, TRF_Method, Dir, K, doScale, Lags)
 
 %This function estimates the probability of attending to attending to spk1
 %in a two-speaker environment.
@@ -178,4 +178,8 @@ q_U = exp(g_s +1.04*sqrt(sp_s))./(1+exp(g_s +1.04*sqrt(sp_s)));
 q_L = exp(g_s -1.04*sqrt(sp_s))./(1+exp(g_s -1.04*sqrt(sp_s)));
 
 
+
+
+function F = vMF(kappa, B, sss)
+F = ( (B/2-1)/kappa - (0.5*(besseli(B/2, kappa) + besseli(B/2-2,kappa)))/besseli(B/2-1,kappa) + sss);
 
